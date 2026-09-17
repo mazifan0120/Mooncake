@@ -21,6 +21,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <string>
@@ -168,6 +169,82 @@ void PrefaultAnonymousRange(void* addr, uint64_t size, uint64_t stride) {
     bytes[size - 1] = 0;
 }
 
+// Inspect physical compound pages, including THP mapped through PTEs rather
+// than PMDs. Every 2MiB span must lie within a single THP allocation.
+Status CheckHugePageRange(int pagemap, int pageflags, void* addr, uint64_t size,
+                          uint64_t page_size) {
+    constexpr uint64_t kPresent = 1ULL << 63;
+    constexpr uint64_t kPfnMask = (1ULL << 55) - 1;
+    constexpr uint64_t kCompoundHead = 1ULL << 15;
+    constexpr uint64_t kCompoundTail = 1ULL << 16;
+    constexpr uint64_t kThp = 1ULL << 22;
+    const auto base = reinterpret_cast<uintptr_t>(addr);
+    uint64_t first_pfn = 0;
+    for (uint64_t off = 0; off < size; off += page_size) {
+        // A PTE-mapped THP may only have the originally touched PTE present.
+        (void)*reinterpret_cast<volatile uint8_t*>(base + off);
+        uint64_t entry = 0, flags = 0;
+        const uint64_t index = (base + off) / page_size;
+        if (pread(pagemap, &entry, sizeof(entry), index * sizeof(entry)) !=
+                sizeof(entry) ||
+            (entry & kPresent) == 0) {
+            return Status::Memory("Cannot read a present shared segment page");
+        }
+        const uint64_t pfn = entry & kPfnMask;
+        if (pfn == 0) {
+            return Status::Memory(
+                "Cannot read page PFNs: debug hugepage check requires "
+                "CAP_SYS_ADMIN");
+        }
+        if (pread(pageflags, &flags, sizeof(flags), pfn * sizeof(flags)) !=
+            sizeof(flags)) {
+            return Status::Memory("Cannot read /proc/kpageflags");
+        }
+        const uint64_t within = off % HugePageSize();
+        if (within == 0) {
+            first_pfn = pfn;
+        }
+        if ((flags & kThp) == 0 ||
+            (flags & (kCompoundHead | kCompoundTail)) == 0 ||
+            first_pfn % (HugePageSize() / page_size) != 0 ||
+            pfn != first_pfn + within / page_size ||
+            (within != 0 && ((flags & kCompoundTail) == 0 ||
+                             (flags & kCompoundHead) != 0))) {
+            return Status::Memory(
+                "Shared segment lacks contiguous THP backing of at least "
+                "2MiB at byte offset " + std::to_string(off));
+        }
+    }
+    return Status::OK();
+}
+
+// Debug-only check: madvise success does not guarantee hugepage allocation.
+Status CheckHugePageBacking(void* addr, uint64_t size) {
+    const char* require = std::getenv("MC_SHARED_SEGMENT_REQUIRE_HUGEPAGE");
+    if (require == nullptr || std::strcmp(require, "1") != 0) {
+        return Status::OK();
+    }
+    const long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0 || HugePageSize() % page_size != 0) {
+        return Status::Memory("Unsupported base page size for hugepage check");
+    }
+    const int pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+    const int pageflags = open("/proc/kpageflags", O_RDONLY | O_CLOEXEC);
+    Status status = Status::Memory(
+        "Debug hugepage check requires access to /proc/self/pagemap and "
+        "/proc/kpageflags (CAP_SYS_ADMIN and read permission)");
+    if (pagemap >= 0 && pageflags >= 0) {
+        status = CheckHugePageRange(pagemap, pageflags, addr, size, page_size);
+    }
+    if (pagemap >= 0) {
+        close(pagemap);
+    }
+    if (pageflags >= 0) {
+        close(pageflags);
+    }
+    return status;
+}
+
 Status MapMemFd(int fd, uint64_t size, void* hint, void*& addr) {
     int map_flags = MAP_SHARED;
     if (hint != nullptr) {
@@ -214,6 +291,14 @@ Status CreateAndMapMemFd(uint64_t size, int& fd, void*& addr) {
     }
     AdviseTransparentHugePages(addr, size);
     PrefaultAnonymousRange(addr, size, HugePageSize());
+    status = CheckHugePageBacking(addr, size);
+    if (!status.ok()) {
+        (void)munmap(addr, size);
+        addr = nullptr;
+        close(fd);
+        fd = -1;
+        return status;
+    }
     AdviseDontFork(addr, size);
     return Status::OK();
 }

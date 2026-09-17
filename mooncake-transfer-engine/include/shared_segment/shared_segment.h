@@ -59,6 +59,9 @@ struct SharedSegmentOptions {
     // true: unnamed memfd + mmap. Prefer THP (MADV_HUGEPAGE) so the kernel
     // can back the span with 2MiB pages; 4KiB pages if THP cannot allocate.
     // Does not use the HugeTLB pool. Ranks share the pages through the memfd.
+    // Debug: MC_SHARED_SEGMENT_REQUIRE_HUGEPAGE=1 fails owner creation unless
+    // pagemap/kpageflags confirm THP backing of at least 2MiB throughout.
+    // Requires CAP_SYS_ADMIN and read access to /proc/kpageflags.
     // false: platform VMM with a fabric shareable handle.
     bool mmap = true;
     // When mmap is true: HostRegister the pages for device_id (Ascend).
