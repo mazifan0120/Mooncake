@@ -84,15 +84,6 @@ bool ShmemThpEnabled() {
 
 uint64_t HugePageSize() {
     static const uint64_t kSize = []() -> uint64_t {
-        FILE* fp = std::fopen(kThpPmdSizePath, "r");
-        if (fp != nullptr) {
-            unsigned long long value = 0;
-            const int matched = std::fscanf(fp, "%llu", &value);
-            std::fclose(fp);
-            if (matched == 1 && value > 0 && (value & (value - 1)) == 0) {
-                return static_cast<uint64_t>(value);
-            }
-        }
         return kFallbackHugePageSize;
     }();
     return kSize;
