@@ -701,6 +701,7 @@ class AscendDirectTransportTest : public ::testing::Test {
 
     void TearDown() override {
         unsetenv("ASCEND_AUTO_CONNECT");
+        unsetenv("ASCEND_BUFFER_POOL");
         ContextManager::getInstance().finalize();
         google::ShutdownGoogleLogging();
     }
@@ -2482,6 +2483,17 @@ struct StoreTeInitScope {
     }
     ~StoreTeInitScope() { globalConfig().ascend_store_te_init = false; }
 };
+
+struct FabricMemStoreTeScope {
+    FabricMemStoreTeScope() {
+        globalConfig().ascend_store_te_init = true;
+        globalConfig().ascend_use_fabric_mem = true;
+    }
+    ~FabricMemStoreTeScope() {
+        globalConfig().ascend_use_fabric_mem = false;
+        globalConfig().ascend_store_te_init = false;
+    }
+};
 }  // namespace
 
 TEST(StoreResourceConfigSplitTest, NoStoreKey_PassthroughVerbatimBothRoles) {
@@ -2551,9 +2563,10 @@ TEST(StoreResourceConfigSplitTest, IsRoceModeEnabled_StoreRoceP2pHccs) {
 }
 
 // -----------------------------------------------------------------------------
-// Client-Server mode: when capability is supported and user did not set
-// ASCEND_LOCAL_COMM_RES, Mooncake auto-injects LocalCommRes={"version":"1.3"}
-// so EngineFactory selects HixlEngine (HixlCS path).
+// Outside FabricMem mode, when capability is supported and the user did not
+// set ASCEND_LOCAL_COMM_RES, Mooncake auto-injects
+// LocalCommRes={"version":"1.3"} so EngineFactory selects HixlEngine (HixlCS
+// path). FabricMem omits LocalCommRes entirely.
 // -----------------------------------------------------------------------------
 
 class ClientServerModeTest : public AscendDirectTransportTest {
@@ -2595,6 +2608,44 @@ TEST_F(ClientServerModeTest, UserEnvOverridesAutoInject) {
     auto it = opts.find("adxl.LocalCommRes");
     ASSERT_NE(it, opts.end());
     EXPECT_EQ(it->second, R"({"version":"1.2"})");
+}
+
+TEST_F(ClientServerModeTest, FabricMemOmitsAutoInjectedLocalCommRes) {
+    FabricMemStoreTeScope fabric_mem;
+    adxl_mock::set_capability_result(adxl::SUCCESS, 1);
+    auto transport = createTransport();
+    ASSERT_NE(transport, nullptr);
+    const auto opts = adxl_mock::get_last_init_options();
+    EXPECT_EQ(opts.find("adxl.LocalCommRes"), opts.end());
+    EXPECT_EQ(opts.at("EnableUseFabricMem"), "1");
+}
+
+TEST_F(ClientServerModeTest, FabricMemOmitsUserLocalCommRes) {
+    FabricMemStoreTeScope fabric_mem;
+    setenv("ASCEND_LOCAL_COMM_RES", R"({"version":"1.2"})", 1);
+    auto transport = createTransport();
+    ASSERT_NE(transport, nullptr);
+    const auto opts = adxl_mock::get_last_init_options();
+    EXPECT_EQ(opts.find("adxl.LocalCommRes"), opts.end());
+    EXPECT_EQ(opts.at("EnableUseFabricMem"), "1");
+}
+
+TEST_F(ClientServerModeTest, NonFabricMemPassesBufferPoolOptionToAdxl) {
+    setenv("ASCEND_BUFFER_POOL", "4:8", 1);
+    auto transport = createTransport();
+    ASSERT_NE(transport, nullptr);
+    const auto opts = adxl_mock::get_last_init_options();
+    EXPECT_EQ(opts.at("adxl.BufferPool"), "4:8");
+}
+
+TEST_F(ClientServerModeTest, FabricMemOmitsBufferPoolOption) {
+    FabricMemStoreTeScope fabric_mem;
+    setenv("ASCEND_BUFFER_POOL", "4:8", 1);
+    auto transport = createTransport();
+    ASSERT_NE(transport, nullptr);
+    const auto opts = adxl_mock::get_last_init_options();
+    EXPECT_EQ(opts.find("adxl.BufferPool"), opts.end());
+    EXPECT_EQ(opts.at("EnableUseFabricMem"), "1");
 }
 
 int main(int argc, char** argv) {

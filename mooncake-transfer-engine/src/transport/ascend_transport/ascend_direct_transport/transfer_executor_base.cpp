@@ -160,9 +160,11 @@ void TransferExecutorBase::ParseExecutorEnvIntoInitParams(InitParams& params) {
     }
     params.client_server_mode =
         adxl::IsAdxlFeatureSupported(adxl::CLIENT_SERVER_COMM);
-    char* buffer_pool = std::getenv("ASCEND_BUFFER_POOL");
-    if (buffer_pool && std::strcmp(buffer_pool, "0:0") != 0) {
-        params.use_buffer_pool = true;
+    if (!params.use_fabric_mem) {
+        char* buffer_pool = std::getenv("ASCEND_BUFFER_POOL");
+        if (buffer_pool && std::strcmp(buffer_pool, "0:0") != 0) {
+            params.use_buffer_pool = true;
+        }
     }
 }
 
@@ -218,28 +220,33 @@ int TransferExecutorBase::initEngines() {
             LOG(INFO) << "Set RdmaServiceLevel to:" << rdma_sl;
         }
     }
-    char* local_comm_res = std::getenv("ASCEND_LOCAL_COMM_RES");
-    if (local_comm_res) {
-        options["adxl.LocalCommRes"] = local_comm_res;
-        LOG(INFO) << "Set LocalCommRes to:" << local_comm_res;
-    } else if (params_.client_server_mode) {
-        options["adxl.LocalCommRes"] = R"({"version":"1.3"})";
-        LOG(INFO) << "Client-Server mode enabled, set LocalCommRes to "
-                     "{\"version\":\"1.3\"}";
+    if (!params_.use_fabric_mem) {
+        char* local_comm_res = std::getenv("ASCEND_LOCAL_COMM_RES");
+        if (local_comm_res) {
+            options["adxl.LocalCommRes"] = local_comm_res;
+            LOG(INFO) << "Set LocalCommRes to:" << local_comm_res;
+        } else if (params_.client_server_mode) {
+            options["adxl.LocalCommRes"] = R"({"version":"1.3"})";
+            LOG(INFO) << "Client-Server mode enabled, set LocalCommRes to "
+                         "{\"version\":\"1.3\"}";
+        }
     }
 
     options[kAutoConnect] = params_.auto_connect ? kEnabled : kDisabled;
     LOG(INFO) << "Set AutoConnect to: " << (params_.auto_connect ? "1" : "0");
 
-    options["adxl.BufferPool"] = "0:0";
-    char* buffer_pool = std::getenv("ASCEND_BUFFER_POOL");
-    if (buffer_pool) {
-        options["adxl.BufferPool"] = buffer_pool;
-        if (std::strcmp(buffer_pool, "0:0") != 0) {
-            LOG(INFO) << "Set adxl.BufferPool to:" << buffer_pool;
-            if (params_.use_async_transfer) {
-                LOG(ERROR) << "Buffer pool mode do not support async transfer.";
-                return -1;
+    if (!params_.use_fabric_mem) {
+        options["adxl.BufferPool"] = "0:0";
+        char* buffer_pool = std::getenv("ASCEND_BUFFER_POOL");
+        if (buffer_pool) {
+            options["adxl.BufferPool"] = buffer_pool;
+            if (std::strcmp(buffer_pool, "0:0") != 0) {
+                LOG(INFO) << "Set adxl.BufferPool to:" << buffer_pool;
+                if (params_.use_async_transfer) {
+                    LOG(ERROR)
+                        << "Buffer pool mode do not support async transfer.";
+                    return -1;
+                }
             }
         }
     }
