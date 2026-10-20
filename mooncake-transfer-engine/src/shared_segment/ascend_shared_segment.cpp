@@ -83,26 +83,19 @@ aclrtPhysicalMemProp BuildHostMemProp() {
 
 // Host pages are only bound to the host by Map; the NPU needs an explicit grant
 // before kernels can touch them. AdxlEngine::MallocMem already does this for
-// the owner. location.id is a driver logical id; aclrtGetDevice returns a user
-// id (ASCEND_RT_VISIBLE_DEVICES), so convert before SetAccess.
+// the owner. In CANN 9.2.0, aclrtMemSetAccess converts location.id from a user
+// id to a logical id internally, so pass the user id from aclrtGetDevice.
 Status GrantDeviceAccess(void* addr, uint64_t size) {
     int32_t user_id = -1;
-    int32_t driver_id = -1;
     auto ret = aclrtGetDevice(&user_id);
     if (ret != ACL_ERROR_NONE) {
         return Status::Memory("aclrtGetDevice failed for MemSetAccess, ret " +
                               std::to_string(ret));
     }
-    ret = aclrtGetLogicDevIdByUserDevId(user_id, &driver_id);
-    if (ret != ACL_ERROR_NONE) {
-        return Status::Memory(
-            "aclrtGetLogicDevIdByUserDevId failed for MemSetAccess, ret " +
-            std::to_string(ret));
-    }
     aclrtMemAccessDesc desc{};
     desc.flags = ACL_RT_MEM_ACCESS_FLAGS_READWRITE;
     desc.location.type = ACL_MEM_LOCATION_TYPE_DEVICE;
-    desc.location.id = static_cast<uint32_t>(driver_id);
+    desc.location.id = static_cast<uint32_t>(user_id);
     ret = aclrtMemSetAccess(addr, size, &desc, kMemAccessDescCount);
     if (ret != ACL_ERROR_NONE) {
         return Status::Memory(
