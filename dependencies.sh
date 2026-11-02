@@ -136,8 +136,13 @@ if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
     apt-get update
     check_success "Failed to update package lists"
 elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "rocky" ] || [ "$OS" = "almalinux" ] || [ "$OS" = "euleros" ] || [ "$OS" = "openeuler" ] || [ "$OS" = "kylin" ]; then
-    yum install -y dnf-plugins-core epel-release || true
-    yum config-manager --set-enabled powertools || yum config-manager --set-enabled crb || true
+    if [ "$OS" = "openeuler" ]; then
+        # Use the image's openEuler repositories, not RHEL's EPEL/CRB.
+        echo "openEuler requires the everything and EPOL repositories to be enabled."
+    else
+        yum install -y dnf-plugins-core epel-release || true
+        yum config-manager --set-enabled powertools || yum config-manager --set-enabled crb || true
+    fi
     yum clean all
     yum makecache
     check_success "Failed to update package lists"
@@ -215,6 +220,15 @@ elif [ "$OS" = "centos" ] || [ "$OS" = "rhel" ] || [ "$OS" = "rocky" ] || [ "$OS
                      xxhash-devel \
                      libbsd-devel"
 
+    if [ "$OS" = "openeuler" ]; then
+        SYSTEM_PACKAGES=${SYSTEM_PACKAGES/boost1.78-devel/boost-devel}
+        SYSTEM_PACKAGES=${SYSTEM_PACKAGES/libzstd-devel/zstd-devel}
+        SYSTEM_PACKAGES=${SYSTEM_PACKAGES/pkgconf-pkg-config/pkgconf}
+        # openEuler 24.03 does not package the C++ MessagePack headers.
+        SYSTEM_PACKAGES=${SYSTEM_PACKAGES/msgpack-devel/}
+        echo "python3-devel targets the system Python; custom Python installations (e.g. 3.12) need matching development headers."
+    fi
+
     yum install -y $SYSTEM_PACKAGES
     check_success "Failed to install system packages"
 
@@ -276,6 +290,24 @@ else
 fi
 
 print_success "System packages installed successfully"
+
+if [ "$OS" = "openeuler" ]; then
+    print_section "Installing MessagePack C++ headers"
+    # Match the version used by scripts/ascend/dependencies_ascend_installation.sh.
+    (
+        set -e
+        MSGPACK_BUILD_DIR=$(mktemp -d)
+        trap 'rm -rf "$MSGPACK_BUILD_DIR"' EXIT
+        wget --timeout=30 --tries=3 -O "$MSGPACK_BUILD_DIR/msgpack.tar.gz" \
+            "${GITHUB_PROXY}/msgpack/msgpack-c/archive/refs/tags/cpp-7.0.0.tar.gz"
+        tar -xzf "$MSGPACK_BUILD_DIR/msgpack.tar.gz" -C "$MSGPACK_BUILD_DIR"
+        cmake -S "$MSGPACK_BUILD_DIR/msgpack-c-cpp-7.0.0" \
+            -B "$MSGPACK_BUILD_DIR/build" -DMSGPACK_BUILD_TESTS=OFF
+        cmake --build "$MSGPACK_BUILD_DIR/build" --parallel "$(nproc)"
+        cmake --install "$MSGPACK_BUILD_DIR/build"
+    )
+    check_success "Failed to install MessagePack C++ headers"
+fi
 
 # Initialize and update git submodules
 print_section "Initializing Git Submodules"
